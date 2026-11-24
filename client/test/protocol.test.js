@@ -1,10 +1,10 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import { EventEmitter, once } from 'node:events'
 import { test } from 'node:test'
 import { WebSocket } from 'ws'
 import { startGateway } from '../gateway/server.js'
-import { connect } from '../src/transport.js'
-import { mergeMessage } from '../src/message-cache.js'
+import { connect } from '../src/transport/websocket.js'
+import { mergeMessage } from '../src/composables/message-cache.js'
 import { startMockServer } from './fixtures/mock-server.js'
 
 const room = 'room:general'
