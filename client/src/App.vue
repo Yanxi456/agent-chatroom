@@ -1,8 +1,13 @@
 ﻿<script setup>
 import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
 import { connect } from './transport.js'
+import { connectDemo } from './demo.js'
 
 const publicRoom = 'room:general'
+const canOpenDemo = import.meta.env.DEV
+const demo = canOpenDemo && (
+  import.meta.env.MODE === 'demo' || new URLSearchParams(location.search).get('demo') === '1'
+)
 const user = ref(null)
 const username = ref('')
 const password = ref('')
@@ -131,12 +136,12 @@ async function authenticate() {
   try {
     if (status.value !== 'connected') {
       status.value = 'connecting'
-      const connection = connect({
+      const connection = (demo ? connectDemo : connect)({
         event: message => { if (connection === transport) handleEvent(message) },
-        closed: () => {
+        closed: reason => {
           if (connection !== transport) return
           disconnect()
-          notice.value = '连接已断开，请重新登录。'
+          notice.value = reason ?? '连接已断开，请重新登录。'
         },
       })
       transport = connection
@@ -158,8 +163,10 @@ async function authenticate() {
     const connection = transport
     const onlineVersion = presenceVersion
     clearInterval(heartbeat)
-    heartbeat = setInterval(() => ping(connection), 15000)
-    void ping(connection)
+    if (!demo) {
+      heartbeat = setInterval(() => ping(connection), 15000)
+      void ping(connection)
+    }
     const [online, list] = await Promise.all([
       connection.request('users.online'),
       connection.request('conversation.list'),
@@ -312,6 +319,7 @@ onUnmounted(() => {
   <main v-if="!authenticated" class="login-page">
     <section class="login-card">
       <div class="brand">智能聊天室</div>
+      <p v-if="demo" class="muted">本地演示 · 可用 demo 登录，请填写任意非空演示密码。</p>
       <h1>{{ registering ? '创建账号' : user ? '重新登录' : '登录' }}</h1>
       <form @submit.prevent="authenticate">
         <label>用户名<input v-model="username" required autocomplete="username" pattern="[A-Za-z0-9_]{3,32}"></label>
@@ -319,6 +327,7 @@ onUnmounted(() => {
         <button class="primary" :disabled="busy">{{ busy ? '处理中…' : registering ? '注册' : '登录' }}</button>
       </form>
       <p v-if="notice" role="status">{{ notice }}</p>
+      <p v-if="!demo && canOpenDemo"><a href="?demo=1">进入本地演示</a></p>
       <button type="button" class="text-button" :disabled="busy" @click="registering = !registering; notice = ''">
         {{ registering ? '返回登录' : '创建账号' }}
       </button>
@@ -337,14 +346,14 @@ onUnmounted(() => {
       <h2>在线用户</h2>
       <button v-for="online in users.filter(entry => entry.user_id !== user.user_id)" :key="online.user_id"
         class="row" @click="openDm(online.username)">{{ online.username }}</button>
-      <form class="inline" @submit.prevent="openDm(peer)">
+      <form v-if="!demo" class="inline" @submit.prevent="openDm(peer)">
         <input v-model="peer" aria-label="私聊用户名" placeholder="输入用户名"><button>私聊</button>
       </form>
     </aside>
     <section class="chat">
       <header>
         <button class="sidebar-toggle" aria-controls="chat-sidebar" :aria-expanded="showSidebar" @click="showSidebar = !showSidebar">会话</button>
-        <h1>{{ roomName(room) }}</h1><span>{{ latency === null ? '已连接' : latency + ' ms' }}</span>
+        <h1>{{ roomName(room) }}</h1><span>{{ demo ? '本地演示' : latency === null ? '已连接' : latency + ' ms' }}</span>
       </header>
       <form class="search inline" @submit.prevent="loadHistory()">
         <input v-model="keyword" aria-label="搜索消息" placeholder="搜索当前会话"><button :disabled="loading">搜索</button>
@@ -373,8 +382,8 @@ onUnmounted(() => {
         <textarea ref="composer" v-model="drafts[active]" aria-label="消息" placeholder="输入消息，或使用 @Agent 发起任务" rows="2" @keydown.enter="onEnter"></textarea>
         <div class="actions">
           <button type="button" aria-label="插入笑脸表情" @click="insertEmoji">🙂</button>
-          <button type="button" :disabled="sending" @click="send('summary')">总结</button>
-          <button type="button" :disabled="sending" @click="send('todos')">提取待办</button>
+          <button v-if="!demo" type="button" :disabled="sending" @click="send('summary')">总结</button>
+          <button v-if="!demo" type="button" :disabled="sending" @click="send('todos')">提取待办</button>
           <button class="primary send" :disabled="sending || !drafts[active]?.trim()">发送</button>
         </div>
       </form>

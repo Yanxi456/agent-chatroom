@@ -13,9 +13,9 @@
       clearTimeout(deadline)
       resolve()
     }, { once: true })
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', event => {
       clearTimeout(deadline)
-      reject(new Error('无法连接聊天服务'))
+      reject(new Error(closeReason(event)))
     }, { once: true })
   })
   socket.addEventListener('message', ({ data }) => {
@@ -40,13 +40,14 @@
       code: message.data?.error?.code,
     }))
   })
-  socket.addEventListener('close', () => {
+  socket.addEventListener('close', event => {
+    const reason = closeReason(event)
     for (const request of pending.values()) {
       clearTimeout(request.timer)
-      request.reject(Object.assign(new Error('连接已断开'), { uncertain: true }))
+      request.reject(Object.assign(new Error(reason), { uncertain: true }))
     }
     pending.clear()
-    closed()
+    closed(reason)
   })
 
   return {
@@ -71,4 +72,11 @@
       })
     },
   }
+}
+
+function closeReason(event) {
+  if (event.reason === 'TCP service unavailable') return '网关已连接，但 TCP 聊天服务不可用。'
+  if (event.code === 1006) return '无法连接聊天网关，请检查网关是否已启动。'
+  if (event.reason === 'TCP connection closed') return 'TCP 聊天服务已断开，请重新登录。'
+  return '连接已断开，请重新登录。'
 }
