@@ -1,17 +1,6 @@
 import { createConnection } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
-
-const maxFrame = 1_048_576
-const utf8 = new TextDecoder('utf-8', { fatal: true })
-
-function validate(payload) {
-  const json = utf8.decode(payload)
-  const value = JSON.parse(json)
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Expected JSON object')
-  }
-  return json
-}
+import { decodeObject, encodeFrame, FrameDecoder, maxFrame } from './framing.js'
 
 export function startGateway({
   port = Number(process.env.GATEWAY_PORT ?? 8766),
@@ -27,17 +16,14 @@ export function startGateway({
   })
   server.on('connection', socket => {
     const upstream = createConnection({ host: tcpHost, port: tcpPort })
-    let remaining = Buffer.alloc(0)
+    const decoder = new FrameDecoder()
 
     socket.on('message', (payload, binary) => {
       try {
         if (binary || !payload.length) throw new Error('Expected text')
-        validate(payload)
+        decodeObject(payload)
         if (upstream.writableLength > maxFrame * 4) throw new Error('Upstream backlog')
-        const frame = Buffer.allocUnsafe(payload.length + 4)
-        frame.writeUInt32BE(payload.length)
-        payload.copy(frame, 4)
-        upstream.write(frame)
+        upstream.write(encodeFrame(payload))
       } catch {
         upstream.destroy()
         socket.close(1008, 'Invalid message or backlog')
@@ -45,16 +31,10 @@ export function startGateway({
     })
     upstream.on('data', chunk => {
       try {
-        remaining = Buffer.concat([remaining, chunk])
-        while (remaining.length >= 4) {
-          const length = remaining.readUInt32BE()
-          if (length === 0 || length > maxFrame) throw new Error('Invalid frame length')
-          if (remaining.length < length + 4) break
-          const json = validate(remaining.subarray(4, length + 4))
+        for (const { json } of decoder.feed(chunk)) {
           if (socket.readyState !== WebSocket.OPEN) break
           if (socket.bufferedAmount > maxFrame * 4) throw new Error('WebSocket backlog')
           socket.send(json)
-          remaining = remaining.subarray(length + 4)
         }
       } catch {
         upstream.destroy()

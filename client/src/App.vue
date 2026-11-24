@@ -2,12 +2,15 @@
 import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
 import { connect } from './transport.js'
 import { connectDemo } from './demo.js'
+import { mergeMessage } from './message-cache.js'
 
 const publicRoom = 'room:general'
 const canOpenDemo = import.meta.env.DEV
 const demo = canOpenDemo && (
   import.meta.env.MODE === 'demo' || new URLSearchParams(location.search).get('demo') === '1'
 )
+const mock = !demo && canOpenDemo && import.meta.env.MODE === 'mock'
+const uncertain = reactive(Object.create(null))
 const user = ref(null)
 const username = ref('')
 const password = ref('')
@@ -55,9 +58,7 @@ const stateText = {
 
 function merge(message, incoming = false) {
   const id = message.conversation_id
-  const bucket = messages[id] ?? (messages[id] = {})
-  const fresh = !bucket[message.message_id]
-  bucket[message.message_id] = message
+  const fresh = mergeMessage(messages, message)
   if (incoming && fresh && id !== active.value) unread[id] = (unread[id] ?? 0) + 1
 }
 
@@ -102,6 +103,7 @@ function disconnect() {
   clearInterval(heartbeat)
   queryVersion++
   loading.value = false
+  for (const pending of Object.values(uncertain)) pending.checked = false
   for (const task of Object.values(tasks)) {
     if (task.state === 'accepted' || task.state === 'running') task.state = 'interrupted'
     interruptTools(task)
@@ -111,7 +113,7 @@ function disconnect() {
 function clearAccount() {
   user.value = null
   users.value = []
-  for (const group of [conversations, messages, drafts, unread, tasks]) {
+  for (const group of [conversations, messages, drafts, unread, tasks, uncertain]) {
     for (const key of Object.keys(group)) delete group[key]
   }
   history.value = null
@@ -130,8 +132,13 @@ async function ping(connection) {
 }
 
 async function authenticate() {
-  busy.value = true
   notice.value = ''
+  const length = Array.from(password.value).length
+  if (!demo && (length < 8 || length > 128)) {
+    notice.value = '密码长度须为 8–128 个字符。'
+    return
+  }
+  busy.value = true
   const name = username.value.trim()
   try {
     if (status.value !== 'connected') {
@@ -222,10 +229,14 @@ async function openDm(name) {
 }
 
 async function loadHistory(older = false) {
-  if (!connected.value) return
+  if (!connected.value) return false
   const previous = older ? history.value : null
   const id = active.value
   const term = previous?.keyword ?? keyword.value.trim()
+  if (Array.from(term).length > 100) {
+    notice.value = '搜索关键词最多可输入 100 个字符。'
+    return false
+  }
   const version = ++queryVersion
   if (!older) history.value = null
   loading.value = true
@@ -234,49 +245,81 @@ async function loadHistory(older = false) {
     if (term) data.keyword = term
     if (previous?.next !== null && previous?.next !== undefined) data.before_id = previous.next
     const result = await transport.request('history.list', data)
-    if (version !== queryVersion) return
+    if (version !== queryVersion) return false
     const pane = messagePane.value
     const oldHeight = pane?.scrollHeight ?? 0
     const oldTop = pane?.scrollTop ?? 0
     for (const message of result.messages) merge(message)
     history.value = {
       keyword: term, next: result.next_before_id,
-      messages: term ? [...result.messages, ...(previous?.messages ?? [])] : [],
+      messages: term ? Array.from(new Map([
+        ...result.messages, ...(previous?.messages ?? []),
+      ].map(message => [message.message_id, message])).values())
+        .sort((a, b) => a.message_id - b.message_id) : [],
     }
     if (older) {
       await nextTick()
       if (version === queryVersion && pane) pane.scrollTop = oldTop + pane.scrollHeight - oldHeight
     }
+    return version === queryVersion
   } catch (error) {
     if (version === queryVersion) notice.value = error.message
+    return false
   } finally {
     if (version === queryVersion) loading.value = false
+  }
+}
+
+async function reviewUncertain() {
+  const id = active.value
+  const pending = uncertain[id]
+  keyword.value = ''
+  if (await loadHistory() && uncertain[id] === pending) pending.checked = true
+}
+
+function resolveUncertain(retry) {
+  const id = active.value
+  const pending = uncertain[id]
+  if (!pending?.checked) return
+  delete uncertain[id]
+  if (retry) {
+    drafts[id] = pending.snapshot
+    void send(pending.mode)
+  } else if (drafts[id] === pending.snapshot) {
+    drafts[id] = ''
   }
 }
 
 async function send(mode) {
   if (!connected.value || sending.value) return
   const id = active.value
+  if (uncertain[id]) return
   const snapshot = drafts[id] ?? ''
   const text = snapshot.trim()
   const agent = mode || text.startsWith('@Agent ')
   const body = text.startsWith('@Agent ') ? text.slice(7).trim() : text
   const instruction = mode && !body ? (mode === 'summary' ? '总结当前会话' : '提取当前会话的待办事项') : body
   if (agent ? !instruction : !text) return
+  if (Array.from(agent ? instruction : text).length > 2000) {
+    notice.value = '消息或指令最多可输入 2000 个字符。'
+    return
+  }
   sending.value = true
   notice.value = ''
+  const connection = transport
   try {
     const data = agent
       ? { conversation_id: id, instruction, ...(mode ? { mode } : {}) }
       : { conversation_id: id, text }
-    const connection = transport
     const { message, task_id } = await connection.request(agent ? 'agent.run' : 'message.send', data)
     if (connection !== transport || !authenticated.value) return
     merge(message)
     if (task_id && !tasks[task_id]) tasks[task_id] = { task_id, conversation_id: id, state: 'accepted', tools: {} }
     if (drafts[id] === snapshot) drafts[id] = ''
   } catch (error) {
-    notice.value = error.uncertain ? '发送结果待确认。请重新加载历史后再决定是否重发。' : error.message
+    if (connection !== transport) return
+    if (error.uncertain) uncertain[id] = { snapshot, mode, checked: false }
+    else notice.value = error.message
   } finally {
     sending.value = false
   }
@@ -320,6 +363,7 @@ onUnmounted(() => {
     <section class="login-card">
       <div class="brand">智能聊天室</div>
       <p v-if="demo" class="muted">本地演示 · 可用 demo 登录，请填写任意非空演示密码。</p>
+      <p v-if="mock" class="muted">本地模拟联调 · 请先注册测试账号。聊天数据和 Agent 事件均为模拟数据。</p>
       <h1>{{ registering ? '创建账号' : user ? '重新登录' : '登录' }}</h1>
       <form @submit.prevent="authenticate">
         <label>用户名<input v-model="username" required autocomplete="username" pattern="[A-Za-z0-9_]{3,32}"></label>
@@ -353,7 +397,8 @@ onUnmounted(() => {
     <section class="chat">
       <header>
         <button class="sidebar-toggle" aria-controls="chat-sidebar" :aria-expanded="showSidebar" @click="showSidebar = !showSidebar">会话</button>
-        <h1>{{ roomName(room) }}</h1><span>{{ demo ? '本地演示' : latency === null ? '已连接' : latency + ' ms' }}</span>
+        <h1>{{ roomName(room) }}</h1>
+        <span>{{ mock ? '模拟联调 · ' : '' }}{{ demo ? '本地演示' : latency === null ? '已连接' : latency + ' ms' }}</span>
       </header>
       <form class="search inline" @submit.prevent="loadHistory()">
         <input v-model="keyword" aria-label="搜索消息" placeholder="搜索当前会话"><button :disabled="loading">搜索</button>
@@ -361,14 +406,14 @@ onUnmounted(() => {
       </form>
       <div ref="messagePane" class="messages">
         <button v-if="history?.next != null" :disabled="loading" @click="loadHistory(true)">加载更早的消息</button>
-        <p v-if="!currentMessages.length" class="muted">{{ loading ? '正在加载…' : '暂无消息' }}</p>
+        <p v-if="!currentMessages.length" class="muted">{{ loading ? '正在加载…' : history?.keyword ? '没有匹配的消息' : '暂无消息' }}</p>
         <article v-for="message in currentMessages" :key="message.message_id" :class="{ own: message.sender.user_id === user.user_id }">
           <small>{{ message.sender.username }} · {{ time(message.created_at_ms) }}</small>
           <div class="bubble">{{ message.text }}</div>
         </article>
       </div>
       <details v-if="currentTasks.length" class="tasks">
-        <summary>Agent 任务（{{ currentTasks.length }}）</summary>
+        <summary>{{ mock ? '模拟 Agent' : 'Agent' }} 任务（{{ currentTasks.length }}）</summary>
         <div v-for="task in currentTasks" :key="task.task_id">
           <strong>{{ stateText[task.state] ?? '已受理' }}</strong> {{ task.error?.message }}
           <div v-for="tool in task.tools" :key="tool.call_id">
@@ -378,13 +423,21 @@ onUnmounted(() => {
         </div>
       </details>
       <p v-if="notice" class="notice" role="status">{{ notice }} <button @click="notice = ''">关闭</button></p>
+      <div v-if="uncertain[active]" class="notice" role="status">
+        <p>上一条发送结果待确认。请查看历史，再决定是否重发。</p>
+        <button :disabled="loading" @click="reviewUncertain">查看历史</button>
+        <template v-if="uncertain[active].checked">
+          <button @click="resolveUncertain(true)">确认重发</button>
+          <button @click="resolveUncertain(false)">取消重发</button>
+        </template>
+      </div>
       <form class="composer" @submit.prevent="send()">
-        <textarea ref="composer" v-model="drafts[active]" aria-label="消息" placeholder="输入消息，或使用 @Agent 发起任务" rows="2" @keydown.enter="onEnter"></textarea>
+        <textarea ref="composer" v-model="drafts[active]" :disabled="!!uncertain[active]" aria-label="消息" placeholder="输入消息，或使用 @Agent 发起任务" rows="2" @keydown.enter="onEnter"></textarea>
         <div class="actions">
-          <button type="button" aria-label="插入笑脸表情" @click="insertEmoji">🙂</button>
-          <button v-if="!demo" type="button" :disabled="sending" @click="send('summary')">总结</button>
-          <button v-if="!demo" type="button" :disabled="sending" @click="send('todos')">提取待办</button>
-          <button class="primary send" :disabled="sending || !drafts[active]?.trim()">发送</button>
+          <button type="button" :disabled="!!uncertain[active]" aria-label="插入笑脸表情" @click="insertEmoji">🙂</button>
+          <button v-if="!demo" type="button" :disabled="sending || !!uncertain[active]" @click="send('summary')">总结</button>
+          <button v-if="!demo" type="button" :disabled="sending || !!uncertain[active]" @click="send('todos')">提取待办</button>
+          <button class="primary send" :disabled="sending || !!uncertain[active] || !drafts[active]?.trim()">发送</button>
         </div>
       </form>
     </section>

@@ -1,7 +1,5 @@
-﻿export function connect({ event, closed, timeout = 10000 }) {
-  const url = new URL('/ws', location.href)
-  url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const socket = new WebSocket(url)
+﻿export function connect({ event, closed, timeout = 10000, endpoint = browserEndpoint(), Socket = WebSocket }) {
+  const socket = new Socket(endpoint)
   const pending = new Map()
   let sequence = 0
   const ready = new Promise((resolve, reject) => {
@@ -54,7 +52,7 @@
     ready,
     close: () => socket.close(),
     request(type, data = {}) {
-      if (socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error('尚未连接'))
+      if (socket.readyState !== Socket.OPEN) return Promise.reject(new Error('尚未连接'))
       const requestId = String(++sequence)
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -79,4 +77,10 @@ function closeReason(event) {
   if (event.code === 1006) return '无法连接聊天网关，请检查网关是否已启动。'
   if (event.reason === 'TCP connection closed') return 'TCP 聊天服务已断开，请重新登录。'
   return '连接已断开，请重新登录。'
+}
+
+function browserEndpoint() {
+  const url = new URL('/ws', location.href)
+  url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url
 }
