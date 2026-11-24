@@ -34,6 +34,7 @@ article.own { justify-items: end; }
 .tasks summary { cursor: pointer; }
 .notice { margin: .4rem 1rem; color: #8a3e21; }
 .composer { border-top: 1px solid #dbe6e6; }
+.composer textarea { resize: vertical; }
 .actions { display: flex; gap: .4rem; margin-top: .4rem; flex-wrap: wrap; }
 .send { margin-left: auto; }
 .sidebar-toggle { display: none; }

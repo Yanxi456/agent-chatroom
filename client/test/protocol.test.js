@@ -202,6 +202,32 @@ test('tool failure reports the same call ID and finishes the task', { timeout: 5
   assert.equal(tools[1].error.code, 'INTERNAL_ERROR')
 })
 
+test('Agent timeout leaves the started tool for the client to interrupt and frees both task slots', { timeout: 6000 }, async t => {
+  const open = await setup(t, { agentFailure: 'timeout', agentTimeout: 600 })
+  const [alice, bob, carol] = await Promise.all([open(), open(), open()])
+  await authenticate(alice, 'alice')
+  await authenticate(bob, 'bob')
+  await authenticate(carol, 'carol')
+  const run = client => client.request('agent.run', { conversation_id: room, instruction: '总结' })
+  const [a, b, c] = await Promise.all([run(alice), run(bob), run(carol)])
+  await assert.rejects(run(alice), { code: 'AGENT_BUSY' })
+  for (const [client, task] of [[alice, a], [bob, b]]) {
+    await client.waitFor('agent.tool', data => data.task_id === task.task_id && data.state === 'started')
+  }
+  assert.ok(!mentions(carol, c.task_id).some(event => event.data.state === 'running'))
+  const terminal = await alice.waitFor('agent.task', data => data.task_id === a.task_id && data.state === 'failed')
+  assert.equal(terminal.error.code, 'AGENT_TIMEOUT')
+  assert.deepEqual(mentions(alice, a.task_id).map(event => event.data.state), ['running', 'started', 'failed'])
+  await carol.waitFor('agent.task', data => data.task_id === c.task_id && data.state === 'running')
+  assert.ok((await run(alice)).task_id)
+  assert.equal((await send(bob, '超时后可继续聊天')).message.task_id, null)
+  const { conversation } = await alice.request('conversation.open_dm', { peer_username: 'bob' })
+  const { message } = await send(alice, '超时后可继续私聊', conversation.conversation_id)
+  await bob.waitFor('message.new', data => data.message.message_id === message.message_id)
+  const history = await alice.request('history.list', { conversation_id: room })
+  assert.ok(!history.messages.some(message => message.task_id === a.task_id && message.kind === 'agent'))
+})
+
 test('merges duplicate history and push messages without adding an extra entry', () => {
   const cache = Object.create(null)
   const message = { conversation_id: room, message_id: 42 }

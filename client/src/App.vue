@@ -3,6 +3,8 @@ import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
 import { connect } from './transport.js'
 import { connectDemo } from './demo.js'
 import { mergeMessage } from './message-cache.js'
+import LoginPage from './views/LoginPage.vue'
+import ChatPage from './views/ChatPage.vue'
 
 const publicRoom = 'room:general'
 const canOpenDemo = import.meta.env.DEV
@@ -11,6 +13,7 @@ const demo = canOpenDemo && (
 )
 const mock = !demo && canOpenDemo && import.meta.env.MODE === 'mock'
 const uncertain = reactive(Object.create(null))
+const reviewing = ref(false)
 const user = ref(null)
 const username = ref('')
 const password = ref('')
@@ -39,6 +42,7 @@ let transport
 let heartbeat
 let queryVersion = 0
 let presenceVersion = 0
+let reviewVersion = 0
 
 const connected = computed(() => authenticated.value && status.value === 'connected')
 const room = computed(() => conversations[active.value])
@@ -102,6 +106,8 @@ function disconnect() {
   latency.value = null
   clearInterval(heartbeat)
   queryVersion++
+  reviewVersion++
+  reviewing.value = false
   loading.value = false
   for (const pending of Object.values(uncertain)) pending.checked = false
   for (const task of Object.values(tasks)) {
@@ -206,6 +212,8 @@ async function logout() {
 }
 
 async function selectRoom(id) {
+  reviewVersion++
+  reviewing.value = false
   active.value = id
   showSidebar.value = false
   unread[id] = 0
@@ -261,7 +269,7 @@ async function loadHistory(older = false) {
       await nextTick()
       if (version === queryVersion && pane) pane.scrollTop = oldTop + pane.scrollHeight - oldHeight
     }
-    return version === queryVersion
+    return version === queryVersion ? result : false
   } catch (error) {
     if (version === queryVersion) notice.value = error.message
     return false
@@ -273,14 +281,40 @@ async function loadHistory(older = false) {
 async function reviewUncertain() {
   const id = active.value
   const pending = uncertain[id]
+  if (!pending || reviewing.value || loading.value) return
+  const version = ++reviewVersion
+  reviewing.value = true
+  pending.checked = false
   keyword.value = ''
-  if (await loadHistory() && uncertain[id] === pending) pending.checked = true
+  const matches = []
+  const senderId = user.value.user_id
+  try {
+    let older = false
+    while (true) {
+      const page = await loadHistory(older)
+      if (!page || version !== reviewVersion || uncertain[id] !== pending) return
+      for (const message of page.messages) {
+        if (message.message_id > pending.baseline &&
+            message.sender.user_id === senderId &&
+            message.text === pending.expectedText &&
+            (message.task_id !== null) === pending.agent) {
+          matches.push(message)
+        }
+      }
+      if (page.next_before_id === null || page.next_before_id <= pending.baseline) break
+      older = true
+    }
+    pending.matches = matches.sort((a, b) => a.message_id - b.message_id)
+    pending.checked = true
+  } finally {
+    if (version === reviewVersion) reviewing.value = false
+  }
 }
 
 function resolveUncertain(retry) {
   const id = active.value
   const pending = uncertain[id]
-  if (!pending?.checked) return
+  if (!pending?.checked || reviewing.value || sending.value) return
   delete uncertain[id]
   if (retry) {
     drafts[id] = pending.snapshot
@@ -296,7 +330,7 @@ async function send(mode) {
   if (uncertain[id]) return
   const snapshot = drafts[id] ?? ''
   const text = snapshot.trim()
-  const agent = mode || text.startsWith('@Agent ')
+  const agent = Boolean(mode || text.startsWith('@Agent '))
   const body = text.startsWith('@Agent ') ? text.slice(7).trim() : text
   const instruction = mode && !body ? (mode === 'summary' ? '总结当前会话' : '提取当前会话的待办事项') : body
   if (agent ? !instruction : !text) return
@@ -307,6 +341,9 @@ async function send(mode) {
   sending.value = true
   notice.value = ''
   const connection = transport
+  const baseline = Object.values(messages[id] ?? {}).reduce(
+    (latest, message) => Math.max(latest, message.message_id), 0,
+  )
   try {
     const data = agent
       ? { conversation_id: id, instruction, ...(mode ? { mode } : {}) }
@@ -318,8 +355,12 @@ async function send(mode) {
     if (drafts[id] === snapshot) drafts[id] = ''
   } catch (error) {
     if (connection !== transport) return
-    if (error.uncertain) uncertain[id] = { snapshot, mode, checked: false }
-    else notice.value = error.message
+    if (error.uncertain) {
+      uncertain[id] = {
+        snapshot, mode, baseline, agent, checked: false, matches: [],
+        expectedText: agent ? '@Agent ' + instruction : text,
+      }
+    } else notice.value = error.message
   } finally {
     sending.value = false
   }
@@ -356,90 +397,46 @@ onUnmounted(() => {
   clearInterval(heartbeat)
   transport?.close()
 })
+
+function toggleRegistering() {
+  registering.value = !registering.value
+  notice.value = ''
+}
+
+const chatSession = {
+  user, users, conversations, active, unread, showSidebar, room, roomName,
+  demo, mock, latency, peer, keyword, reviewing, loading, history,
+  currentMessages, time, currentTasks, stateText, notice, uncertain,
+  sending, drafts, logout, selectRoom, openDm, loadHistory, reviewUncertain,
+  resolveUncertain, send, onEnter, insertEmoji,
+  setMessagePane: element => { messagePane.value = element },
+  setComposer: element => { composer.value = element },
+}
+
+function syncRoute() {
+  const route = authenticated.value ? '#/chat' : '#/login'
+  if (location.hash !== route) window.history.replaceState(window.history.state, '', route)
+}
+
+watch(authenticated, syncRoute, { immediate: true, flush: 'sync' })
+window.addEventListener('hashchange', syncRoute)
+onUnmounted(() => window.removeEventListener('hashchange', syncRoute))
 </script>
 
 <template>
-  <main v-if="!authenticated" class="login-page">
-    <section class="login-card">
-      <div class="brand">智能聊天室</div>
-      <p v-if="demo" class="muted">本地演示 · 可用 demo 登录，请填写任意非空演示密码。</p>
-      <p v-if="mock" class="muted">本地模拟联调 · 请先注册测试账号。聊天数据和 Agent 事件均为模拟数据。</p>
-      <h1>{{ registering ? '创建账号' : user ? '重新登录' : '登录' }}</h1>
-      <form @submit.prevent="authenticate">
-        <label>用户名<input v-model="username" required autocomplete="username" pattern="[A-Za-z0-9_]{3,32}"></label>
-        <label>密码<input v-model="password" required type="password" :autocomplete="registering ? 'new-password' : 'current-password'"></label>
-        <button class="primary" :disabled="busy">{{ busy ? '处理中…' : registering ? '注册' : '登录' }}</button>
-      </form>
-      <p v-if="notice" role="status">{{ notice }}</p>
-      <p v-if="!demo && canOpenDemo"><a href="?demo=1">进入本地演示</a></p>
-      <button type="button" class="text-button" :disabled="busy" @click="registering = !registering; notice = ''">
-        {{ registering ? '返回登录' : '创建账号' }}
-      </button>
-    </section>
-  </main>
-
-  <main v-else class="workspace">
-    <aside id="chat-sidebar" class="sidebar" :class="{ expanded: showSidebar }">
-      <div class="brand">智能聊天室</div>
-      <div class="account">{{ user.username }} <button @click="logout">退出</button></div>
-      <h2>会话</h2>
-      <button v-for="conversation in conversations" :key="conversation.conversation_id" class="row"
-        :class="{ selected: conversation.conversation_id === active }" @click="selectRoom(conversation.conversation_id)">
-        {{ roomName(conversation) }} <span v-if="unread[conversation.conversation_id]">{{ unread[conversation.conversation_id] }}</span>
-      </button>
-      <h2>在线用户</h2>
-      <button v-for="online in users.filter(entry => entry.user_id !== user.user_id)" :key="online.user_id"
-        class="row" @click="openDm(online.username)">{{ online.username }}</button>
-      <form v-if="!demo" class="inline" @submit.prevent="openDm(peer)">
-        <input v-model="peer" aria-label="私聊用户名" placeholder="输入用户名"><button>私聊</button>
-      </form>
-    </aside>
-    <section class="chat">
-      <header>
-        <button class="sidebar-toggle" aria-controls="chat-sidebar" :aria-expanded="showSidebar" @click="showSidebar = !showSidebar">会话</button>
-        <h1>{{ roomName(room) }}</h1>
-        <span>{{ mock ? '模拟联调 · ' : '' }}{{ demo ? '本地演示' : latency === null ? '已连接' : latency + ' ms' }}</span>
-      </header>
-      <form class="search inline" @submit.prevent="loadHistory()">
-        <input v-model="keyword" aria-label="搜索消息" placeholder="搜索当前会话"><button :disabled="loading">搜索</button>
-        <button v-if="history?.keyword" type="button" @click="keyword = ''; loadHistory()">退出搜索</button>
-      </form>
-      <div ref="messagePane" class="messages">
-        <button v-if="history?.next != null" :disabled="loading" @click="loadHistory(true)">加载更早的消息</button>
-        <p v-if="!currentMessages.length" class="muted">{{ loading ? '正在加载…' : history?.keyword ? '没有匹配的消息' : '暂无消息' }}</p>
-        <article v-for="message in currentMessages" :key="message.message_id" :class="{ own: message.sender.user_id === user.user_id }">
-          <small>{{ message.sender.username }} · {{ time(message.created_at_ms) }}</small>
-          <div class="bubble">{{ message.text }}</div>
-        </article>
-      </div>
-      <details v-if="currentTasks.length" class="tasks">
-        <summary>{{ mock ? '模拟 Agent' : 'Agent' }} 任务（{{ currentTasks.length }}）</summary>
-        <div v-for="task in currentTasks" :key="task.task_id">
-          <strong>{{ stateText[task.state] ?? '已受理' }}</strong> {{ task.error?.message }}
-          <div v-for="tool in task.tools" :key="tool.call_id">
-            {{ tool.name }} · {{ stateText[tool.state] }}
-            {{ tool.result_count != null ? ' · ' + tool.result_count + ' 条' : '' }} {{ tool.error?.message }}
-          </div>
-        </div>
-      </details>
-      <p v-if="notice" class="notice" role="status">{{ notice }} <button @click="notice = ''">关闭</button></p>
-      <div v-if="uncertain[active]" class="notice" role="status">
-        <p>上一条发送结果待确认。请查看历史，再决定是否重发。</p>
-        <button :disabled="loading" @click="reviewUncertain">查看历史</button>
-        <template v-if="uncertain[active].checked">
-          <button @click="resolveUncertain(true)">确认重发</button>
-          <button @click="resolveUncertain(false)">取消重发</button>
-        </template>
-      </div>
-      <form class="composer" @submit.prevent="send()">
-        <textarea ref="composer" v-model="drafts[active]" :disabled="!!uncertain[active]" aria-label="消息" placeholder="输入消息，或使用 @Agent 发起任务" rows="2" @keydown.enter="onEnter"></textarea>
-        <div class="actions">
-          <button type="button" :disabled="!!uncertain[active]" aria-label="插入笑脸表情" @click="insertEmoji">🙂</button>
-          <button v-if="!demo" type="button" :disabled="sending || !!uncertain[active]" @click="send('summary')">总结</button>
-          <button v-if="!demo" type="button" :disabled="sending || !!uncertain[active]" @click="send('todos')">提取待办</button>
-          <button class="primary send" :disabled="sending || !!uncertain[active] || !drafts[active]?.trim()">发送</button>
-        </div>
-      </form>
-    </section>
-  </main>
+  <ChatPage v-if="authenticated" :session="chatSession" />
+  <LoginPage
+    v-else
+    v-model:username="username"
+    v-model:password="password"
+    :demo="demo"
+    :mock="mock"
+    :can-open-demo="canOpenDemo"
+    :registering="registering"
+    :reconnecting="!!user"
+    :busy="busy"
+    :notice="notice"
+    @authenticate="authenticate"
+    @toggle-registering="toggleRegistering"
+  />
 </template>

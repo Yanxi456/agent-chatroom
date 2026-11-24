@@ -30,7 +30,7 @@ const requestFields = new Map([
 ])
 
 export function startMockServer({
-  port = 8765, agentDelay = 150, agentFailure = false,
+  port = 8765, agentDelay = 150, agentFailure = false, agentTimeout = 60_000,
   responseFault = () => undefined,
 } = {}) {
   const accounts = new Map()
@@ -106,12 +106,13 @@ export function startMockServer({
     return { messages, next_before_id: matches.length > messages.length ? messages[0].message_id : null }
   }
 
-  function after(action) {
+  function after(action, delay = agentDelay) {
     const timer = setTimeout(() => {
       timers.delete(timer)
       action()
-    }, agentDelay)
+    }, delay)
     timers.add(timer)
+    return timer
   }
 
   function dispatch() {
@@ -123,20 +124,36 @@ export function startMockServer({
         const session = online.get(requester.user_id)
         if (session) event(session, type, { ...ids, ...data })
       }
+      let finished = false
+      const complete = () => {
+        finished = true
+        clearTimeout(timeout)
+        timers.delete(timeout)
+        pending.delete(requester.user_id)
+        activeTasks--
+        dispatch()
+      }
       notify('agent.task', { state: 'running' })
+      const timeout = after(() => {
+        notify('agent.task', { state: 'failed', error: error('AGENT_TIMEOUT', '模拟 Agent 执行超时') })
+        complete()
+      }, agentTimeout)
       after(() => {
+        if (finished) return
         if (agentFailure === 'unavailable') {
           notify('agent.task', { state: 'failed', error: error('AGENT_UNAVAILABLE', '模拟模型不可用') })
-          finish(requester)
+          complete()
           return
         }
         const tool = { call_id: 'tool-1', name: 'read_history' }
         notify('agent.tool', { ...tool, state: 'started' })
+        if (agentFailure === 'timeout') return
         after(() => {
+          if (finished) return
           if (agentFailure === 'tool') {
             notify('agent.tool', { ...tool, state: 'failed', error: error('INTERNAL_ERROR', '模拟历史查询失败') })
             notify('agent.task', { state: 'failed', error: error('AGENT_FAILED', '模拟 Agent 无法继续执行') })
-            finish(requester)
+            complete()
             return
           }
           const history = page(ids.conversation_id, { before_id: message.message_id })
@@ -145,16 +162,10 @@ export function startMockServer({
             '【模拟 Agent】已读取触发前的 ' + history.messages.length + ' 条测试消息。', ids.task_id)
           publish(reply)
           notify('agent.task', { state: 'succeeded', message_id: reply.message_id })
-          finish(requester)
+          complete()
         })
       })
     }
-  }
-
-  function finish(user) {
-    pending.delete(user.user_id)
-    activeTasks--
-    dispatch()
   }
 
   function handle(session, request) {
