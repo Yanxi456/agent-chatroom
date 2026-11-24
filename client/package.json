@@ -1,0 +1,1 @@
+{"name":"agent-chatroom-client","private":true,"type":"module","scripts":{"dev":"vite","build":"vite build","gateway":"node gateway/index.js","test":"node --test"},"dependencies":{"vue":"^3.5.0","ws":"^8.18.0"},"devDependencies":{"vite":"^7.0.0","@vitejs/plugin-vue":"^6.0.0"}}
