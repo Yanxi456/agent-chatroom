@@ -191,3 +191,98 @@ class SchedulerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [message["text"] for message in await self.history(alice)], ["@Agent retry", "done"]
         )
+
+    async def test_result_validation_and_unicode_length_boundary(self):
+        boundary = "🙂" * 2000
+        invalid_results = {
+            "empty": {"text": " \n\t "},
+            "too long": {"text": boundary + "字"},
+            "wrong type": {"text": 1},
+            "extra field": {"text": "hello", "extra": True},
+        }
+        results = {**invalid_results, "at limit": {"text": "  " + boundary + "\n"}}
+
+        async def run_task(context, _tools, _emit):
+            return results[context["instruction"]]
+
+        await self.start(run_task)
+        client = await self.connect("alice")
+        triggers = []
+        for instruction in invalid_results:
+            with self.subTest(instruction=instruction):
+                task_id = await self.submit(client, instruction)
+                triggers.append(task_id)
+                await client.event("agent.task", task_id=task_id, state="running")
+                terminal = await client.event("agent.task", task_id=task_id)
+                self.assertEqual(terminal["state"], "failed")
+                self.assertEqual(terminal["error"]["code"], "AGENT_FAILED")
+
+        valid_task = await self.submit(client, "at limit")
+        terminal = await client.event("agent.task", task_id=valid_task, state="succeeded")
+        messages = await self.history(client)
+        self.assertEqual([m["task_id"] for m in messages if m["kind"] == "user"], [*triggers, valid_task])
+        replies = [m for m in messages if m["kind"] == "agent"]
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0]["message_id"], terminal["message_id"])
+        self.assertEqual(replies[0]["task_id"], valid_task)
+        self.assertEqual(replies[0]["text"], boundary)
+
+    async def test_reply_write_failure_preserves_trigger_and_allows_retry(self):
+        finish = asyncio.Event()
+
+        async def run_task(_context, _tools, _emit):
+            await finish.wait()
+            return {"text": "done"}
+
+        await self.start(run_task)
+        client = await self.connect("alice")
+        task_id = await self.submit(client, "first")
+        await client.event("agent.task", task_id=task_id, state="running")
+        with patch.object(self.storage, "write_message", side_effect=sqlite3.OperationalError):
+            finish.set()
+            failed = await client.event("agent.task", task_id=task_id, state="failed")
+        self.assertEqual(failed["error"]["code"], "INTERNAL_ERROR")
+        retry = await self.submit(client, "retry")
+        await client.event("agent.task", task_id=retry, state="succeeded")
+        self.assertEqual(
+            [(m["task_id"], m["kind"]) for m in await self.history(client)],
+            [(task_id, "user"), (retry, "user"), (retry, "agent")],
+        )
+        self.assertEqual(
+            [e["message"]["task_id"] for e in client.pending_events("message.new")], [retry]
+        )
+
+    async def test_inflight_task_follows_user_across_logout_and_login(self):
+        finish = asyncio.Event()
+        call = {"call_id": "after-login", "name": "read_history"}
+
+        async def run_task(_context, tools, emit):
+            await finish.wait()
+            await emit({**call, "state": "started"})
+            page = await tools["read_history"]()
+            await emit({**call, "state": "succeeded", "result_count": len(page["messages"])})
+            return {"text": "done"}
+
+        await self.start(run_task)
+        original = await self.connect("alice")
+        task_id = await self.submit(original, "follow me")
+        await original.event("agent.task", task_id=task_id, state="running")
+        logout = await original.request("auth.logout")
+        self.assertTrue(logout["ok"], logout)
+        self.assertEqual(await asyncio.wait_for(original.reader.read(1), 3), b"")
+
+        current = ChatClient(*await asyncio.open_connection(*self.address))
+        self.addAsyncCleanup(current.close)
+        login = await current.request("auth.login", username="alice", password=PASSWORD)
+        self.assertTrue(login["ok"], login)
+        await self.assert_submit_failure(current, "while running", "AGENT_BUSY")
+        finish.set()
+
+        for state in ("started", "succeeded"):
+            await current.event("agent.tool", task_id=task_id, call_id=call["call_id"], state=state)
+        terminal = await current.event("agent.task", task_id=task_id)
+        self.assertEqual(terminal["state"], "succeeded")
+        reply = (await current.event("message.new"))["message"]
+        self.assertEqual(reply["message_id"], terminal["message_id"])
+        self.assertEqual(reply["task_id"], task_id)
+        self.assertEqual([m["text"] for m in await self.history(current)], ["@Agent follow me", "done"])

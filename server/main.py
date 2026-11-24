@@ -53,9 +53,11 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     server = ChatServer(Storage(config.DB_PATH))
     listener = await server.start()
-    logging.info("Chatroom listening on %s", [sock.getsockname() for sock in listener.sockets])
     try:
-        await listener.serve_forever()
+        logging.info("Chatroom listening on %s", [sock.getsockname() for sock in listener.sockets])
+        # start() already accepts connections. Wait for cancellation so close()
+        # can disconnect clients before waiting for the listener to finish.
+        await asyncio.Event().wait()
     finally:
         await server.close()
 

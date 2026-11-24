@@ -3,8 +3,9 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from server.main import ChatServer
+from server.main import ChatServer, main
 from server.storage import Storage
 from shared.codec import FrameDecoder, encode_frame
 
@@ -163,3 +164,37 @@ class SessionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.request(alice, "ping", {}), {"ok": True, "result": {}})
         self.assertEqual(await asyncio.wait_for(alice.reader.read(1), 3), b"")
         self.assertEqual(await self.login(await self.connect(), "alice"), user)
+
+    async def test_cancelling_main_closes_connected_client(self):
+        listening = asyncio.get_running_loop().create_future()
+        start = ChatServer.start
+
+        async def start_on_loopback(server):
+            listener = await start(server, "127.0.0.1", 0)
+            listening.set_result(listener)
+            return listener
+
+        with (
+            patch("server.main.config.DB_PATH", self.storage.path),
+            patch.object(ChatServer, "start", start_on_loopback),
+            patch("server.main.logging.basicConfig"),
+        ):
+            service = asyncio.create_task(main())
+
+            async def stop_service():
+                service.cancel()
+                await asyncio.gather(service, return_exceptions=True)
+
+            self.addAsyncCleanup(stop_service)
+            listener = await asyncio.wait_for(listening, 3)
+            self.address = listener.sockets[0].getsockname()[:2]
+            peer = await self.connect()
+            self.assertEqual(await self.request(peer, "ping", {}), {"ok": True, "result": {}})
+
+            service.cancel()
+            # Timing out here must not cancel the service a second time.
+            done, _ = await asyncio.wait({service}, timeout=3)
+            self.assertIn(service, done, "Shutdown waited for the client to disconnect")
+            self.assertTrue(service.cancelled())
+            self.assertFalse(listener.is_serving())
+            self.assertEqual(await asyncio.wait_for(peer.reader.read(1), 3), b"")

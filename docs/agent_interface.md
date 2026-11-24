@@ -202,9 +202,10 @@ from server.storage import Storage
 
 async def main() -> None:
     server = ChatServer(Storage("agent-demo.sqlite3"), run_task=run_task)
-    listener = await server.start("127.0.0.1", 8765)
+    await server.start("127.0.0.1", 8765)
     try:
-        await listener.serve_forever()
+        # 服务已开始接受连接，Ctrl+C 取消等待后由 finally 关闭在线连接。
+        await asyncio.Event().wait()
     finally:
         await server.close()
 

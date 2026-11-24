@@ -149,6 +149,40 @@ class ChatIntegrationTest(unittest.IsolatedAsyncioTestCase):
             {"messages": [private_message], "next_before_id": None},
         )
 
+    async def test_repeated_send_id_has_no_second_write_and_is_scoped_to_connection(self):
+        await self.start()
+        alice, bob = await self.connect(), await self.connect()
+        for client, username in ((alice, "alice"), (bob, "bob")):
+            await self.register(client, username)
+            await self.login(client, username)
+
+        request_id = "send-1"
+        frame = encode_frame({
+            "v": 1, "type": "message.send", "request_id": request_id,
+            "data": {"conversation_id": GENERAL, "text": "same message"},
+        })
+        alice.writer.write(frame + frame)
+        await alice.writer.drain()
+        replies = [await alice.response(request_id) for _ in range(2)]
+        accepted = [reply["result"]["message"] for reply in replies if reply["ok"]]
+        errors = [reply["error"]["code"] for reply in replies if not reply["ok"]]
+        self.assertEqual(len(accepted), 1, replies)
+        self.assertEqual(errors, ["INVALID_ARGUMENT"])
+        alice_message = accepted[0]
+
+        bob.writer.write(frame)
+        await bob.writer.drain()
+        second = await bob.response(request_id)
+        self.assertTrue(second["ok"], second)
+        bob_message = second["result"]["message"]
+        self.assertGreater(bob_message["message_id"], alice_message["message_id"])
+        self.assertEqual(await alice.event("message.new"), {"message": bob_message})
+        self.assertEqual(await bob.event("message.new"), {"message": alice_message})
+        for client in (alice, bob):
+            page = await self.result(client, "history.list", conversation_id=GENERAL)
+            self.assertEqual(page, {"messages": [alice_message, bob_message], "next_before_id": None})
+            self.assertEqual(client.pending_events("message.new"), [])
+
     async def test_history_literal_pagination_after_relogin(self):
         await self.start()
         alice, bob, _ = await self.peers()
