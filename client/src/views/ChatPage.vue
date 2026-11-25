@@ -1,27 +1,46 @@
 <script setup>
+import { nextTick, ref } from 'vue'
 import ConversationSidebar from '../components/ConversationSidebar.vue'
 import HistorySearch from '../components/HistorySearch.vue'
 import MessageList from '../components/MessageList.vue'
 import AgentTasks from '../components/AgentTasks.vue'
 import MessageComposer from '../components/MessageComposer.vue'
+import ChatIcon from '../components/ChatIcon.vue'
 
 const { session } = defineProps({ session: { type: Object, required: true } })
 const {
-  showSidebar, room, roomName, mock, demo, latency, notice, uncertain, active,
+  showSidebar, room, roomName, users, mock, demo, latency, notice, uncertain, active,
   loading, reviewing, reviewUncertain, sending, resolveUncertain,
 } = session
+
+const showSearch = ref(true)
+const search = ref(null)
+
+async function toggleSearch() {
+  showSearch.value = !showSearch.value
+  if (showSearch.value) {
+    await nextTick()
+    search.value?.focus()
+  }
+}
 </script>
 
 <template>
   <main class="workspace">
     <ConversationSidebar :session="session" />
     <section class="chat">
-      <header>
+      <header class="chat-header">
         <button class="sidebar-toggle" aria-controls="chat-sidebar" :aria-expanded="showSidebar" @click="showSidebar = !showSidebar">会话</button>
-        <h1>{{ roomName(room) }}</h1>
-        <span>{{ mock ? '模拟联调 · ' : '' }}{{ demo ? '本地演示' : latency === null ? '已连接' : latency + ' ms' }}</span>
+        <div class="chat-heading">
+          <h1>{{ roomName(room) }}</h1>
+          <small v-if="room?.kind !== 'dm'"><i class="status-dot"></i>{{ users.length }} 位用户在线</small>
+          <small v-else>私人会话</small>
+        </div>
+        <button class="icon-button" aria-label="搜索当前会话" title="搜索当前会话" aria-controls="chat-history-search"
+          :aria-expanded="showSearch" @click="toggleSearch"><ChatIcon name="search" /></button>
+        <span class="connection"><i class="status-dot"></i>{{ demo ? '本地演示' : (mock ? '模拟联调 · ' : '') + '已连接' + (latency === null ? '' : ' · ' + latency + ' ms') }}</span>
       </header>
-      <HistorySearch :session="session" />
+      <HistorySearch v-show="showSearch" ref="search" :session="session" />
       <MessageList :session="session" />
       <AgentTasks :session="session" />
       <p v-if="notice" class="notice" role="status">{{ notice }} <button @click="notice = ''">关闭</button></p>

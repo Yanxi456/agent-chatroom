@@ -36,6 +36,12 @@ export function useChatSession() {
     ? history.value.messages
     : Object.values(messages[active.value] ?? {}).sort((a, b) => a.message_id - b.message_id))
   const { currentTasks, handleAgentEvent, interruptTasks, clearTasks, acceptTask } = useAgentTasks(active)
+  const latestMessages = computed(() => Object.fromEntries(
+    Object.entries(messages).map(([id, bucket]) => [
+      id, Object.values(bucket).reduce((latest, message) =>
+        !latest || message.message_id > latest.message_id ? message : latest, null),
+    ]),
+  ))
   const roomName = conversation => conversation?.kind === 'dm'
     ? conversation.peer?.username ?? '私聊'
     : '公共群聊'
@@ -283,7 +289,7 @@ export function useChatSession() {
   const chatSession = {
     user, users, conversations, active, unread, showSidebar, room, roomName,
     demo, mock, latency, peer, keyword, reviewing, loading, history,
-    currentMessages, time, currentTasks, stateText, notice, uncertain,
+    currentMessages, latestMessages, time, currentTasks, stateText, notice, uncertain,
     sending, drafts, logout, selectRoom, openDm, loadHistory, reviewUncertain,
     resolveUncertain, send, onEnter, insertEmoji,
     setMessagePane: element => { messagePane.value = element },

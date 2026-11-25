@@ -1,23 +1,43 @@
-﻿# 智能聊天室网页客户端
+﻿# 智能聊天室客户端
 
-在仓库的 client 目录运行 npm install。打开三个终端分别启动 TCP 服务端、网关和 Vue 页面。TCP 服务由后端提供，网关默认连接 127.0.0.1:8765。
+打开 **三个 PowerShell 终端**，分别启动 Python 后端、WebSocket 网关和 Vue 页面。
 
-```powershell
-npm run gateway
-```
+### 1. 启动 Python 后端
 
-```powershell
-npm run dev
-```
-
-打开 Vite 打印的本地地址。网页通过同站点 /ws 连接网关，Vite 将其转发到 127.0.0.1:8766。可通过 CHAT_HOST 和 CHAT_PORT 设置网关的 TCP 上游。默认允许本机网页来源，CHAT_ORIGIN 可指定单一来源。
+在 `agent-chatroom` 仓库根目录运行：
 
 ```powershell
-npm test
-npm run build
+python -m server.main
 ```
 
-自动化测试使用临时 WebSocket 网关和模拟 TCP 端点，验证 UTF-8 请求、拆帧、合帧及连接释放。Agent、历史和多用户业务联调需要运行真实后端。
+看到 `Chatroom listening on ...8765` 就表示后端已启动。默认监听 `127.0.0.1:8765`，并在仓库根目录创建 `chatroom.sqlite3`。
+
+### 2. 启动 WebSocket 网关
+
+在第二个终端进入 `agent-chatroom/client`，运行：
+
+```powershell
+npm.cmd run gateway
+```
+
+网关默认监听 `8766`，连接后端的 `8765`。如果提示端口已占用，先确认对应终端里是否还开着上次的模拟服务或网关。
+
+### 3. 启动 Vue 并验证
+
+在第三个终端进入 `agent-chatroom/client`，运行：
+
+```powershell
+npm.cmd run dev
+```
+
+打开**这次 Vite 打印的网址**，使用普通登录页。若地址带 `?demo=1`，请去掉该参数。先注册一个测试账号，再登录。接着开第二个标签页，用**另一个账号**登录，依次检查：
+
+1. 两个账号都出现在对方的在线列表中。
+2. 群聊消息两边都能收到，发件人页面只显示一次。
+3. 点击在线用户名发私聊，再搜索刚发过的消息。
+4. 关闭一个标签页，确认另一边的在线列表更新。
+5. 发出 `@Agent 总结刚才的消息`。当前版本缺少正式模型 Runner，预期显示 Agent 失败提示，此后仍能继续发普通消息。
+
 
 ## 无正式后端的本地联调
 
