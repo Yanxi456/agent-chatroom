@@ -5,11 +5,10 @@ import { connectDemo } from '../mocks/demo.js'
 export function useAuthentication({
   notice, handleEvent, resetAfterDisconnect, clearAccountState, initializeChat,
 }) {
-  const canOpenDemo = import.meta.env.DEV
-  const demo = canOpenDemo && (
+  const demo = import.meta.env.DEV && (
     import.meta.env.MODE === 'demo' || new URLSearchParams(location.search).get('demo') === '1'
   )
-  const mock = !demo && canOpenDemo && import.meta.env.MODE === 'mock'
+  const mock = !demo && import.meta.env.DEV && import.meta.env.MODE === 'mock'
   const user = ref(null)
   const username = ref('')
   const password = ref('')
@@ -125,7 +124,7 @@ export function useAuthentication({
   const getConnection = () => transport
 
   return {
-    authenticated, username, password, demo, mock, canOpenDemo, registering,
+    authenticated, username, password, demo, mock, registering,
     user, busy, latency, connected, authenticate, logout, toggleRegistering, getConnection,
   }
 }

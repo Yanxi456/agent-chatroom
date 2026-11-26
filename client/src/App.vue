@@ -5,7 +5,7 @@ import LoginPage from './views/LoginPage.vue'
 import ChatPage from './views/ChatPage.vue'
 
 const {
-  authenticated, username, password, demo, mock, canOpenDemo, registering,
+  authenticated, username, password, demo, mock, registering,
   user, busy, notice, authenticate, toggleRegistering, chatSession,
 } = useChatSession()
 
@@ -27,7 +27,6 @@ onUnmounted(() => window.removeEventListener('hashchange', syncRoute))
     v-model:password="password"
     :demo="demo"
     :mock="mock"
-    :can-open-demo="canOpenDemo"
     :registering="registering"
     :reconnecting="!!user"
     :busy="busy"
