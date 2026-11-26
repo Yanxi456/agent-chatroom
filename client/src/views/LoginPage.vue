@@ -2,7 +2,6 @@
 defineProps({
   demo: Boolean,
   mock: Boolean,
-  canOpenDemo: Boolean,
   registering: Boolean,
   reconnecting: Boolean,
   busy: Boolean,
@@ -26,7 +25,6 @@ const emit = defineEmits(['authenticate', 'toggle-registering'])
         <button class="primary" :disabled="busy">{{ busy ? '处理中…' : registering ? '注册' : '登录' }}</button>
       </form>
       <p v-if="notice" role="status">{{ notice }}</p>
-      <p v-if="!demo && canOpenDemo"><a href="?demo=1">进入本地演示</a></p>
       <button type="button" class="text-button" :disabled="busy" @click="emit('toggle-registering')">
         {{ registering ? '返回登录' : '创建账号' }}
       </button>

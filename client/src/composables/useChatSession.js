@@ -27,7 +27,7 @@ export function useChatSession() {
   let reviewVersion = 0
 
   const {
-    authenticated, username, password, demo, mock, canOpenDemo, registering,
+    authenticated, username, password, demo, mock, registering,
     user, busy, latency, connected, authenticate, logout, toggleRegistering, getConnection,
   } = useAuthentication({ notice, handleEvent, resetAfterDisconnect, clearAccountState, initializeChat })
 
@@ -297,7 +297,7 @@ export function useChatSession() {
   }
 
   return {
-    authenticated, username, password, demo, mock, canOpenDemo, registering,
+    authenticated, username, password, demo, mock, registering,
     user, busy, notice, authenticate, toggleRegistering, chatSession,
   }
 }

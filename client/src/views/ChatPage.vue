@@ -13,7 +13,7 @@ const {
   loading, reviewing, reviewUncertain, sending, resolveUncertain,
 } = session
 
-const showSearch = ref(true)
+const showSearch = ref(false)
 const search = ref(null)
 
 async function toggleSearch() {
